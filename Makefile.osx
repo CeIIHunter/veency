@@ -2,7 +2,7 @@
 GO_EASY_ON_ME=1
 include theos/makefiles/common.mk
 
-LDFLAGS = -lvncserver -L.  -framework CoreGraphics -framework IOMobileFramebuffer -framework CoreSurface -framework IOMobileFramebuffer -framework IOKit -framework GraphicsServices  -framework QuartzCore -weak_reference_mismatches weak -framework UIKit -framework GraphicsServices -F/Applications/Xcode.app//Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS6.1.sdk/System/Library/PrivateFrameworks
+LDFLAGS = -lsimulatetouch -lvncserver -L.  -framework CoreGraphics -framework IOMobileFramebuffer -framework CoreSurface -framework IOMobileFramebuffer -framework IOKit -framework GraphicsServices  -framework QuartzCore -weak_reference_mismatches weak -framework UIKit -framework GraphicsServices -F/Applications/Xcode.app//Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS6.1.sdk/System/Library/PrivateFrameworks
 
 TWEAK_NAME = Veency
 Veency_FILES = Tweak.mm

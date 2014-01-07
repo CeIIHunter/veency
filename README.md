@@ -4,6 +4,7 @@
 
 ### To compile...
 * git clone https://github.com/DHowett/theos.git
+* git clone https://github.com/iolate/SimulateTouch.git
 * "unzip theos_includes.zip" into theos/include  (or you can grab the headers from various places, iphone-dev, etc.)
 * Edit Makefile.osx,  change the framework path to where you have Xcode installed.
 * make -f Makefile.osx

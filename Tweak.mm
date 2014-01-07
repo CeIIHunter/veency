@@ -52,6 +52,7 @@
 
 #include "SpringBoardAccess.h"
 #include "SpringBoardAccess.c"
+#include "SimulateTouch/SimulateTouch.h"
 
 #define MSHake2(name) \
     (void *)&$ ## name, (void **)&_ ## name
@@ -160,6 +161,7 @@ static NSCondition *condition_;
 static NSLock *lock_;
 
 static rfbClientPtr client_;
+static int downFinger_=0;
 
 static void VNCSetup();
 static void VNCEnabled();
@@ -400,7 +402,7 @@ static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
         return;
     }
 
-    mach_port_t purple(0);
+//    mach_port_t purple(0);
 
     if ((diff & 0x10) != 0) {
         struct GSEventRecord record;
@@ -447,6 +449,19 @@ static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
         GSSendSystemEvent(&record);
     }
 
+    if (twas != tis) {
+	if(tis) {
+		downFinger_=[SimulateTouch simulateTouch:0 atPoint:CGPointMake(x,y) withType:(tis?STTouchDown:STTouchUp)];
+	} else {
+		[SimulateTouch simulateTouch:downFinger_ atPoint:CGPointMake(x,y) withType:(tis?STTouchDown:STTouchUp)];
+	}
+    } else if(tis) {
+	if(downFinger_>=0)
+		[SimulateTouch simulateTouch:downFinger_ atPoint:CGPointMake(x,y) withType:STTouchMove];
+    }
+
+// Old version using SendEvent, doesn't work on iOS7 anymore.  Maybe needed for iOS4?
+/*
     if (twas != tis || tis) {
         struct VeencyEvent event;
 
@@ -495,9 +510,9 @@ static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
         FixRecord(&event.record);
         GSSendEvent(&event.record, port);
     }
-
     if (purple != 0 && PurpleAllocated)
         mach_port_deallocate(mach_task_self(), purple);
+*/
 }
 
 GSEventRef (*$GSEventCreateKeyEvent)(int, CGPoint, CFStringRef, CFStringRef, id, UniChar, short, short);
