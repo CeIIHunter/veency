@@ -38,6 +38,7 @@
 #import <QuartzCore/CAWindowServer.h>
 #import <QuartzCore/CAWindowServerDisplay.h>
 
+#import <CoreSurface/CoreSurface.h>
 #import <CoreGraphics/CGGeometry.h>
 #import <GraphicsServices/GraphicsServices.h>
 #import <Foundation/Foundation.h>
@@ -50,6 +51,11 @@
 #import <SpringBoard/SBStatusBarController.h>
 
 #include "SpringBoardAccess.h"
+#include "SpringBoardAccess.c"
+
+#define MSHake2(name) \
+    (void *)&$ ## name, (void **)&_ ## name
+
 
 extern "C" void CoreSurfaceBufferFlushProcessorCaches(CoreSurfaceBufferRef buffer);
 extern "C" int CoreSurfaceAcceleratorTransferSurface(CoreSurfaceAcceleratorRef accel, CoreSurfaceBufferRef src, CoreSurfaceBufferRef dst, CFDictionaryRef dict);
@@ -725,10 +731,12 @@ static void OnLayer(IOMobileFramebufferRef fb, CoreSurfaceBufferRef layer) {
         [thread start];
     } else if (_unlikely(clients_ != 0)) {
         if (layer == NULL) {
+/*  *** this blacking of the screen causes a mess in opengl apps.
             if (accelerator_ != NULL)
                 memset(screen_->frameBuffer, 0, sizeof(rfbPixel) * width_ * height_);
             else
                 VNCBlack();
+*/
         } else {
             if (accelerator_ != NULL)
                 CoreSurfaceAcceleratorTransferSurface(accelerator_, layer, buffer_, options_);
@@ -837,7 +845,7 @@ MSInitialize {
     dlset($GSCreateSyntheticKeyEvent, "_GSCreateSyntheticKeyEvent");
     dlset($IOMobileFramebufferIsMainDisplay, "IOMobileFramebufferIsMainDisplay");
 
-    MSHookFunction(&IOMobileFramebufferSwapSetLayer, MSHake(IOMobileFramebufferSwapSetLayer));
+    MSHookFunction((void *)&IOMobileFramebufferSwapSetLayer, MSHake2(IOMobileFramebufferSwapSetLayer));
     MSHookFunction(&rfbRegisterSecurityHandler, MSHake(rfbRegisterSecurityHandler));
 
     if (wait_)
