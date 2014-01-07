@@ -10,5 +10,5 @@
 
 ### To install...
 * Copy the "Veency.dylib" file to this folder on your mobile:  /Library/MobileSubstrate/DynamicLibraries/
-* Restart springboard on the device.
+* Restart springboard on the device or power the device off and back on.
 
