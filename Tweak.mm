@@ -71,6 +71,7 @@ static const size_t BitsPerSample = 8;
 static CoreSurfaceAcceleratorRef accelerator_;
 static CoreSurfaceBufferRef buffer_;
 static CFDictionaryRef options_;
+static CFDictionaryRef options2_=CFDictionaryCreate(NULL,NULL,NULL,0,NULL,NULL);
 
 static NSMutableSet *handlers_;
 static rfbScreenInfoPtr screen_;
@@ -82,8 +83,11 @@ static unsigned clients_;
 
 static CFMessagePortRef ashikase_;
 static bool cursor_;
+static bool skipBlack_;
 
 static rfbPixel *black_;
+static rfbPixel *mainFrameBuffer_=NULL;
+static char *bufferData_;
 
 static void VNCBlack() {
     if (_unlikely(black_ == NULL))
@@ -332,6 +336,9 @@ static void VNCSettings() {
         NSNumber *cursor = [settings objectForKey:@"ShowCursor"];
         cursor_ = cursor == nil ? true : [cursor boolValue];
 
+        NSNumber *skipBlack = [settings objectForKey:@"SkipBlack"];
+        skipBlack_ = skipBlack == nil ? false : [skipBlack boolValue];
+
         if (clients_ != 0)
             AshikaseSetEnabled(cursor_, true);
     }
@@ -373,7 +380,6 @@ static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
     if (ratio_ == 0)
         return;
 
-    CGPoint location = {x, y};
 
     if (width_ > height_) {
         int t(x);
@@ -402,7 +408,6 @@ static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
         return;
     }
 
-//    mach_port_t purple(0);
 
     if ((diff & 0x10) != 0) {
         struct GSEventRecord record;
@@ -450,18 +455,20 @@ static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
     }
 
     if (twas != tis) {
-	if(tis) {
-		downFinger_=[SimulateTouch simulateTouch:0 atPoint:CGPointMake(x,y) withType:(tis?STTouchDown:STTouchUp)];
-	} else {
-		[SimulateTouch simulateTouch:downFinger_ atPoint:CGPointMake(x,y) withType:(tis?STTouchDown:STTouchUp)];
-	}
+        if(tis) {
+            downFinger_=[SimulateTouch simulateTouch:0 atPoint:CGPointMake(x,y) withType:(tis?STTouchDown:STTouchUp)];
+        } else {
+            [SimulateTouch simulateTouch:downFinger_ atPoint:CGPointMake(x,y) withType:(tis?STTouchDown:STTouchUp)];
+        }
     } else if(tis) {
-	if(downFinger_>=0)
-		[SimulateTouch simulateTouch:downFinger_ atPoint:CGPointMake(x,y) withType:STTouchMove];
+        if(downFinger_>=0)
+            [SimulateTouch simulateTouch:downFinger_ atPoint:CGPointMake(x,y) withType:STTouchMove];
     }
-
-// Old version using SendEvent, doesn't work on iOS7 anymore.  Maybe needed for iOS4?
 /*
+    // Old version using SendEvent, SimluateTouch can do SendEvent if detected.
+    CGPoint location = {x, y};
+    mach_port_t purple(0);
+
     if (twas != tis || tis) {
         struct VeencyEvent event;
 
@@ -510,8 +517,9 @@ static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
         FixRecord(&event.record);
         GSSendEvent(&event.record, port);
     }
-    if (purple != 0 && PurpleAllocated)
+    if (purple != 0 && PurpleAllocated) {
         mach_port_deallocate(mach_task_self(), purple);
+    }
 */
 }
 
@@ -675,8 +683,11 @@ static void VNCSetup() {
     //screen_->frameBuffer = reinterpret_cast<char *>(mmap(NULL, sizeof(rfbPixel) * width_ * height_, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_NOCACHE, VM_FLAGS_PURGABLE, 0));
 
     CoreSurfaceBufferLock(buffer_, 3);
-    screen_->frameBuffer = reinterpret_cast<char *>(CoreSurfaceBufferGetBaseAddress(buffer_));
+    bufferData_ = reinterpret_cast<char *>(CoreSurfaceBufferGetBaseAddress(buffer_));
     CoreSurfaceBufferUnlock(buffer_);
+    if(mainFrameBuffer_==NULL)
+        mainFrameBuffer_ = reinterpret_cast<rfbPixel *>(mmap(NULL, sizeof(rfbPixel) * width_ * height_, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_NOCACHE, VM_FLAGS_PURGABLE, 0));
+    screen_->frameBuffer=(char *)mainFrameBuffer_;
 
     screen_->kbdAddEvent = &VNCKeyboard;
     screen_->ptrAddEvent = &VNCPointer;
@@ -725,6 +736,7 @@ static IOMobileFramebufferRef main_;
 static CoreSurfaceBufferRef layer_;
 
 static void OnLayer(IOMobileFramebufferRef fb, CoreSurfaceBufferRef layer) {
+    int doUpdates=1;
     if (_unlikely(width_ == 0 || height_ == 0)) {
         CGSize size;
         IOMobileFramebufferGetDisplaySize(fb, &size);
@@ -753,9 +765,36 @@ static void OnLayer(IOMobileFramebufferRef fb, CoreSurfaceBufferRef layer) {
                 VNCBlack();
 */
         } else {
-            if (accelerator_ != NULL)
-                CoreSurfaceAcceleratorTransferSurface(accelerator_, layer, buffer_, options_);
-            else {
+            if (accelerator_ != NULL) {
+//                CoreSurfaceAcceleratorTransferSurface(accelerator_, layer, buffer_, options_);
+
+                if(!skipBlack_) {
+                    screen_->frameBuffer=(char *)bufferData_;
+                    CoreSurfaceAcceleratorTransferSurface(accelerator_, layer, buffer_, options_);
+                } else {
+
+                    char *data=bufferData_;
+                    char *dataEnd=bufferData_+(width_*height_*sizeof(rfbPixel));
+                    int hasNonZero=0;
+                    int hasZero=0;
+                    int width4=(width_/4)+width_;
+
+                    CoreSurfaceBufferLock(buffer_, 3);
+                    CoreSurfaceAcceleratorTransferSurface(accelerator_, layer, buffer_, options2_);
+
+                    screen_->frameBuffer=(char *)mainFrameBuffer_;
+                    for(int *d=(int *)(data+(width_*(height_/8)*7)); d<(int *)dataEnd; d+=width4) { 
+                        if(d[0]) { ++hasNonZero;  }
+                        else ++hasZero;
+                    } 
+                    if((hasNonZero/2)>hasZero) {
+                        memcpy(mainFrameBuffer_,bufferData_,width_*height_*sizeof(rfbPixel));
+                    } else { 
+                        doUpdates=0;
+                    }
+                }
+
+            } else {
                 CoreSurfaceBufferLock(layer, 2);
                 rfbPixel *data(reinterpret_cast<rfbPixel *>(CoreSurfaceBufferGetBaseAddress(layer)));
 
@@ -769,8 +808,8 @@ static void OnLayer(IOMobileFramebufferRef fb, CoreSurfaceBufferRef layer) {
                 CoreSurfaceBufferUnlock(layer);
             }
         }
-
-        rfbMarkRectAsModified(screen_, 0, 0, width_, height_);
+        if(doUpdates)
+            rfbMarkRectAsModified(screen_, 0, 0, width_, height_);
     }
 }
 
@@ -903,3 +942,4 @@ MSInitialize {
 
     [pool release];
 }
+/* vim: set ts=4 sw=4 expandtab: */
