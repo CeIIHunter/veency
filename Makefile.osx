@@ -11,4 +11,12 @@ include $(THEOS_MAKE_PATH)/tweak.mk
 
 after-install::
 	install.exec "killall -9 SpringBoard"
+
+internal-stage::
+	$(ECHO_NOTHING)mkdir -p $(THEOS_STAGING_DIR)/Library/PreferenceLoader/Preferences$(ECHO_END)
+	$(ECHO_NOTHING)cp PreferenceLoader/Preferences/* $(THEOS_STAGING_DIR)/Library/PreferenceLoader/Preferences/$(ECHO_END)
+	$(ECHO_NOTHING)mkdir -p $(THEOS_STAGING_DIR)/System/Library/CoreServices/SpringBoard.app$(ECHO_END)
+	$(ECHO_NOTHING)cp -a Default_Veency.png FSO_Veency.png $(THEOS_STAGING_DIR)/System/Library/CoreServices/SpringBoard.app$(ECHO_END)
+
+
 include $(THEOS_MAKE_PATH)/aggregate.mk
