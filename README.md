@@ -1,6 +1,7 @@
 
 ### This is a version of veency that compiles on OSX
 * It also has a fix for broken images on OpenGLES apps.
+* Uses SimulateTouch
 
 ### To compile...
 * git clone https://github.com/DHowett/theos.git
@@ -11,5 +12,5 @@
 
 ### To install...
 * Copy the "Veency.dylib" file to this folder on your mobile:  /Library/MobileSubstrate/DynamicLibraries/
-* Restart springboard on the device or power the device off and back on.
+* Power the device off and back on.
 
