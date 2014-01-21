@@ -63,6 +63,8 @@ extern "C" int CoreSurfaceAcceleratorTransferSurface(CoreSurfaceAcceleratorRef a
 
 static size_t width_;
 static size_t height_;
+static size_t destwidth_;
+static size_t destheight_;
 static NSUInteger ratio_ = 0;
 
 static const size_t BytesPerPixel = 4;
@@ -74,7 +76,7 @@ static CFDictionaryRef options_;
 static CFDictionaryRef options2_=CFDictionaryCreate(NULL,NULL,NULL,0,NULL,NULL);
 
 static NSMutableSet *handlers_;
-static rfbScreenInfoPtr screen_;
+static rfbScreenInfoPtr screen_=NULL;
 static bool running_;
 static int buttons_;
 static int x_, y_;
@@ -84,10 +86,26 @@ static unsigned clients_;
 static CFMessagePortRef ashikase_;
 static bool cursor_;
 static bool skipBlack_;
+static int divideScreenBy_=1;
 
 static rfbPixel *black_;
 static rfbPixel *mainFrameBuffer_=NULL;
 static char *bufferData_;
+
+/*
+static void Log(const char *str,...) {
+FILE *out;
+va_list args;
+
+va_start(args,str);
+out=fopen("/tmp/veency.log","a");
+vfprintf(out,str,args);
+fflush(out);
+fclose(out);
+va_end(args);
+}
+*/
+
 
 static void VNCBlack() {
     if (_unlikely(black_ == NULL))
@@ -312,6 +330,16 @@ static void FixRecord(GSEventRecord *record) {
         memmove(&record->windowContextId, &record->windowContextId + 1, sizeof(*record) - (reinterpret_cast<uint8_t *>(&record->windowContextId + 1) - reinterpret_cast<uint8_t *>(record)) + record->size);
 }
 
+static void VNCSettingsScreenSize() {
+    NSDictionary *settings([NSDictionary dictionaryWithContentsOfFile:[NSString stringWithFormat:@"%@/Library/Preferences/com.saurik.Veency.plist", NSHomeDirectory()]]);
+
+    NSNumber *divideScreenBy = [settings objectForKey:@"DivideScreenBy"];
+    divideScreenBy_ = [divideScreenBy intValue];
+    if(divideScreenBy_<1 || divideScreenBy_>320) divideScreenBy_=1;
+    destwidth_ = width_/divideScreenBy_;
+    destheight_ = height_/divideScreenBy_;
+}
+
 static void VNCSettings() {
     NSDictionary *settings([NSDictionary dictionaryWithContentsOfFile:[NSString stringWithFormat:@"%@/Library/Preferences/com.saurik.Veency.plist", NSHomeDirectory()]]);
 
@@ -338,6 +366,8 @@ static void VNCSettings() {
 
         NSNumber *skipBlack = [settings objectForKey:@"SkipBlack"];
         skipBlack_ = skipBlack == nil ? false : [skipBlack boolValue];
+
+        VNCSettingsScreenSize();
 
         if (clients_ != 0)
             AshikaseSetEnabled(cursor_, true);
@@ -394,6 +424,8 @@ static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
 
     x /= ratio_;
     y /= ratio_;
+    x*=divideScreenBy_;
+    y*=divideScreenBy_;
 
     x_ = x; y_ = y;
     int diff = buttons_ ^ buttons;
@@ -629,7 +661,15 @@ static void VNCSetup() {
         int argc(1);
         char *arg0(strdup("VNCServer"));
         char *argv[] = {arg0, NULL};
-        screen_ = rfbGetScreen(&argc, argv, width_, height_, BitsPerSample, 3, BytesPerPixel);
+/* *** -geometry does not scale the picture
+        char a1[]="-geometry";
+        char a2[]="300x300";
+        char *argv[] = {arg0,a1,a2, NULL};
+*/
+
+        VNCSettingsScreenSize();
+
+        screen_ = rfbGetScreen(&argc, argv, destwidth_, destheight_, BitsPerSample, 3, BytesPerPixel);
         free(arg0);
 
         VNCSettings();
@@ -685,6 +725,7 @@ static void VNCSetup() {
     CoreSurfaceBufferLock(buffer_, 3);
     bufferData_ = reinterpret_cast<char *>(CoreSurfaceBufferGetBaseAddress(buffer_));
     CoreSurfaceBufferUnlock(buffer_);
+    // let's alloc the maximum memory needed for the full screen
     if(mainFrameBuffer_==NULL)
         mainFrameBuffer_ = reinterpret_cast<rfbPixel *>(mmap(NULL, sizeof(rfbPixel) * width_ * height_, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_NOCACHE, VM_FLAGS_PURGABLE, 0));
     screen_->frameBuffer=(char *)mainFrameBuffer_;
@@ -735,6 +776,50 @@ void (*$IOMobileFramebufferIsMainDisplay)(IOMobileFramebufferRef, int *);
 static IOMobileFramebufferRef main_;
 static CoreSurfaceBufferRef layer_;
 
+
+static void CopyToFrameBuffer(rfbPixel *dest,rfbPixel *from,int divideBy) {
+    int size;
+    int skipDots;
+    rfbPixel *fromEnd,*destUpto,*fromNextLine,*fromUpto,*fromLine,*destEnd,*destLine;
+
+    destEnd=dest+(destwidth_*destheight_);
+
+    skipDots=divideBy;
+    if(skipDots<=0) skipDots=1;
+    destUpto=dest;
+    size=width_*height_;
+    fromEnd=from+size;
+
+    fromUpto=from;
+    while(fromUpto<fromEnd && destUpto<destEnd) {
+        destLine=destUpto;
+        fromLine=fromUpto;
+        fromNextLine=fromUpto+width_;
+        while(fromUpto<fromNextLine) {
+            *destUpto=*fromUpto;
+            ++destUpto;
+            fromUpto+=skipDots;
+        }
+        fromUpto=fromLine+(width_*skipDots);
+        destUpto=destLine+destwidth_;
+    }
+}
+static int isBottomScreenBlack() {
+    const char *data=bufferData_;
+    const char *dataEnd=bufferData_+(width_*height_*sizeof(rfbPixel));
+    int hasNonZero=0;
+    int hasZero=0;
+    int width4=(width_/4)+width_;
+
+
+    for(int *d=(int *)(data+(width_*(height_/8)*7)); d<(int *)dataEnd; d+=width4) { 
+        if(d[0]) { ++hasNonZero;  }
+        else ++hasZero;
+    } 
+    if((hasNonZero/2)>hasZero) { return 0; }
+    return 1;
+}
+
 static void OnLayer(IOMobileFramebufferRef fb, CoreSurfaceBufferRef layer) {
     int doUpdates=1;
     if (_unlikely(width_ == 0 || height_ == 0)) {
@@ -743,6 +828,8 @@ static void OnLayer(IOMobileFramebufferRef fb, CoreSurfaceBufferRef layer) {
 
         width_ = size.width;
         height_ = size.height;
+        destwidth_ = size.width/divideScreenBy_;
+        destheight_ = size.height/divideScreenBy_;
 
         if (width_ == 0 || height_ == 0)
             return;
@@ -768,27 +855,25 @@ static void OnLayer(IOMobileFramebufferRef fb, CoreSurfaceBufferRef layer) {
             if (accelerator_ != NULL) {
 //                CoreSurfaceAcceleratorTransferSurface(accelerator_, layer, buffer_, options_);
 
-                if(!skipBlack_) {
+                if(!skipBlack_ && !divideScreenBy_) {
                     screen_->frameBuffer=(char *)bufferData_;
                     CoreSurfaceAcceleratorTransferSurface(accelerator_, layer, buffer_, options_);
                 } else {
 
-                    char *data=bufferData_;
-                    char *dataEnd=bufferData_+(width_*height_*sizeof(rfbPixel));
-                    int hasNonZero=0;
-                    int hasZero=0;
-                    int width4=(width_/4)+width_;
-
+                    screen_->frameBuffer=(char *)mainFrameBuffer_;
+                    int ok=1;
                     CoreSurfaceBufferLock(buffer_, 3);
                     CoreSurfaceAcceleratorTransferSurface(accelerator_, layer, buffer_, options2_);
 
-                    screen_->frameBuffer=(char *)mainFrameBuffer_;
-                    for(int *d=(int *)(data+(width_*(height_/8)*7)); d<(int *)dataEnd; d+=width4) { 
-                        if(d[0]) { ++hasNonZero;  }
-                        else ++hasZero;
-                    } 
-                    if((hasNonZero/2)>hasZero) {
-                        memcpy(mainFrameBuffer_,bufferData_,width_*height_*sizeof(rfbPixel));
+                    if(skipBlack_) {
+                        ok=isBottomScreenBlack()?0:1;
+                    }
+                    if(ok) {
+                        if(divideScreenBy_>1) {
+                            CopyToFrameBuffer(mainFrameBuffer_,(rfbPixel *)bufferData_,divideScreenBy_);
+                        } else {
+                            memcpy(mainFrameBuffer_,bufferData_,width_*height_*sizeof(rfbPixel));
+                        }
                     } else { 
                         doUpdates=0;
                     }
@@ -809,7 +894,7 @@ static void OnLayer(IOMobileFramebufferRef fb, CoreSurfaceBufferRef layer) {
             }
         }
         if(doUpdates)
-            rfbMarkRectAsModified(screen_, 0, 0, width_, height_);
+            rfbMarkRectAsModified(screen_, 0, 0, destwidth_, destheight_);
     }
 }
 

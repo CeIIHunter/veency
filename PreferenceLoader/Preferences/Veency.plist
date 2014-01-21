@@ -18,7 +18,7 @@
 	    <key>cell</key>
 	    <string>PSGroupCell</string>
 	    <key>footerText</key>
-	    <string>Skipping black screens will enable better but slower updates for camera, opengles, etc. apps.</string>
+	    <string>Skipping black screens will enable better updates for camera, opengles, etc. apps.</string>
 	</dict>
 
         <dict>
@@ -99,6 +99,7 @@
             </dict></array>
 	</dict>
 
+
 	<dict>
 	    <key>cell</key>
 	    <string>PSTitleValueCell</string>
@@ -109,6 +110,29 @@
                 <key>wildcat</key><false/>
                 <key>voip</key><false/>
             </dict></array>
+	</dict>
+
+	<dict>
+	    <key>cell</key>
+	    <string>PSGroupCell</string>
+            <key>footerText</key>
+            <string>To get a smaller screen for faster updates.  Sorry, need to restart device after changing this number.</string>
+	</dict>
+	<dict>
+	    <key>cell</key>
+	    <string>PSEditTextCell</string>
+            <key>defaults</key>
+            <string>com.saurik.Veency</string>
+	    <key>label</key>
+	    <string>Divide screen size by</string>
+	    <key>isNumeric</key>
+	    <true />
+            <key>default</key>
+            <integer>1</integer>
+            <key>key</key>
+            <string>DivideScreenBy</string>
+            <key>PostNotification</key>
+            <string>com.saurik.Veency-Settings</string>
 	</dict>
 
     </array>
