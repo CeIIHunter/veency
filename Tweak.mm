@@ -26,6 +26,8 @@
 #define _unlikely(expr) \
     __builtin_expect(expr, 0)
 
+#define SYSTEM_VERSION_GREATER_THAN_OR_EQUAL_TO(_gVersion)  ( floor(NSFoundationVersionNumber) >= _gVersion )
+
 #include <CydiaSubstrate.h>
 
 #include <rfb/rfb.h>
@@ -90,12 +92,14 @@ static int divideScreenBy_=1;
 
 static rfbPixel *black_;
 static rfbPixel *mainFrameBuffer_=NULL;
+static rfbPixel *correctedBlocksBuffer_=NULL;
 static char *bufferData_;
 
-/*
+#if 0
 static void Log(const char *str,...) {
 FILE *out;
 va_list args;
+
 
 va_start(args,str);
 out=fopen("/tmp/veency.log","a");
@@ -104,7 +108,7 @@ fflush(out);
 fclose(out);
 va_end(args);
 }
-*/
+#endif
 
 
 static void VNCBlack() {
@@ -363,6 +367,10 @@ static void VNCSettings() {
 
         NSNumber *cursor = [settings objectForKey:@"ShowCursor"];
         cursor_ = cursor == nil ? true : [cursor boolValue];
+        if(SYSTEM_VERSION_GREATER_THAN_OR_EQUAL_TO(7)) { 
+            // iOS7 crashes with the mouse cursor
+            cursor_=false; 
+        }
 
         NSNumber *skipBlack = [settings objectForKey:@"SkipBlack"];
         skipBlack_ = skipBlack == nil ? false : [skipBlack boolValue];
@@ -407,6 +415,7 @@ struct VeencyEvent {
 };
 
 static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
+//Log("pointer event, x,y: %i,%i b:%i\n",x,y,buttons);
     if (ratio_ == 0)
         return;
 
@@ -435,9 +444,12 @@ static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
 
     rfbDefaultPtrAddEvent(buttons, x, y, client);
 
-    if (Ashikase(false)) {
-        AshikaseSendEvent(x, y, buttons);
-        return;
+    // *** not working in iOS7
+    if(!SYSTEM_VERSION_GREATER_THAN_OR_EQUAL_TO(7)) { 
+        if (Ashikase(false)) {
+            AshikaseSendEvent(x, y, buttons);
+            return;
+        }
     }
 
 
@@ -562,6 +574,7 @@ static void VNCKeyboard(rfbBool down, rfbKeySym key, rfbClientPtr client) {
     if (!down)
         return;
 
+//~~~ iOS7 may need IOHIDEventCreateKeyboardEvent()
     switch (key) {
         case XK_Return: key = '\r'; break;
         case XK_BackSpace: key = 0x7f; break;
@@ -777,6 +790,34 @@ static IOMobileFramebufferRef main_;
 static CoreSurfaceBufferRef layer_;
 
 
+static void Copy64x16BlockedImage(char *dest,const char *fromStart) {
+    const char *fromEnd;
+    char *to,*toLine;
+    fromEnd=fromStart+(4*width_*height_);
+    to=dest;
+    int toLineOffset=0;
+    unsigned int toXOffset=0;
+
+    toLine=to;
+    const char *from=fromStart;
+
+    while(from<fromEnd) {
+        toXOffset=0;
+        while(toXOffset<(width_*4)) {
+            // one 16x line from image
+            toLineOffset=0;
+            while(toLineOffset<16) {
+                memcpy(toLine+toXOffset+(4*width_*toLineOffset),from,64*4);
+                toLineOffset++;
+                from+=64*4;
+            }
+            toXOffset+=64*4;
+        }
+        toLine+=16*4*width_;
+    }
+
+}
+
 static void CopyToFrameBuffer(rfbPixel *dest,rfbPixel *from,int divideBy) {
     int size;
     int skipDots;
@@ -784,10 +825,10 @@ static void CopyToFrameBuffer(rfbPixel *dest,rfbPixel *from,int divideBy) {
 
     destEnd=dest+(destwidth_*destheight_);
 
+    size=width_*height_;
     skipDots=divideBy;
     if(skipDots<=0) skipDots=1;
     destUpto=dest;
-    size=width_*height_;
     fromEnd=from+size;
 
     fromUpto=from;
@@ -820,6 +861,8 @@ static int isBottomScreenBlack() {
     return 1;
 }
 
+
+static bool updatingScreen=false;
 static void OnLayer(IOMobileFramebufferRef fb, CoreSurfaceBufferRef layer) {
     int doUpdates=1;
     if (_unlikely(width_ == 0 || height_ == 0)) {
@@ -852,6 +895,7 @@ static void OnLayer(IOMobileFramebufferRef fb, CoreSurfaceBufferRef layer) {
                 VNCBlack();
 */
         } else {
+//Log("Accelerator_:%x\n",accelerator_);
             if (accelerator_ != NULL) {
 //                CoreSurfaceAcceleratorTransferSurface(accelerator_, layer, buffer_, options_);
 
@@ -859,7 +903,6 @@ static void OnLayer(IOMobileFramebufferRef fb, CoreSurfaceBufferRef layer) {
                     screen_->frameBuffer=(char *)bufferData_;
                     CoreSurfaceAcceleratorTransferSurface(accelerator_, layer, buffer_, options_);
                 } else {
-
                     screen_->frameBuffer=(char *)mainFrameBuffer_;
                     int ok=1;
                     CoreSurfaceBufferLock(buffer_, 3);
@@ -880,6 +923,8 @@ static void OnLayer(IOMobileFramebufferRef fb, CoreSurfaceBufferRef layer) {
                 }
 
             } else {
+                if(updatingScreen) return;
+                updatingScreen=true;
                 CoreSurfaceBufferLock(layer, 2);
                 rfbPixel *data(reinterpret_cast<rfbPixel *>(CoreSurfaceBufferGetBaseAddress(layer)));
 
@@ -889,8 +934,22 @@ static void OnLayer(IOMobileFramebufferRef fb, CoreSurfaceBufferRef layer) {
                 data[0] = 0;
                 data[0] = corner;*/
 
-                screen_->frameBuffer = const_cast<char *>(reinterpret_cast<volatile char *>(data));
-                CoreSurfaceBufferUnlock(layer);
+//                screen_->frameBuffer = const_cast<char *>(reinterpret_cast<volatile char *>(data));
+
+                const char *x = const_cast<char *>(reinterpret_cast<volatile char *>(data));
+                if(divideScreenBy_==1) {
+                    Copy64x16BlockedImage((char *)mainFrameBuffer_,x);
+                    CoreSurfaceBufferUnlock(layer);
+                } else {
+                    if(correctedBlocksBuffer_==NULL)
+                        correctedBlocksBuffer_ = reinterpret_cast<rfbPixel *>(mmap(NULL, sizeof(rfbPixel) * width_ * height_, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_NOCACHE, VM_FLAGS_PURGABLE, 0));
+                    Copy64x16BlockedImage((char *)correctedBlocksBuffer_,x);
+                    CoreSurfaceBufferUnlock(layer);
+                    CopyToFrameBuffer(mainFrameBuffer_,(rfbPixel *)correctedBlocksBuffer_,divideScreenBy_);
+                }
+
+//    memcpy(mainFrameBuffer_,x,(4*640*200));
+                updatingScreen=false;
             }
         }
         if(doUpdates)

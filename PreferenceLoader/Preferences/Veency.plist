@@ -71,7 +71,7 @@
 	    <key>cell</key>
 	    <string>PSGroupCell</string>
             <key>footerText</key>
-            <string>Leaving the password blank will prompt you to accept each incoming connection.</string>
+	    <string>Leaving the password blank will prompt you to accept each incoming connection and the connection will be view only.</string>
 	</dict>
 
         <dict>
@@ -104,7 +104,7 @@
 	    <key>cell</key>
 	    <string>PSTitleValueCell</string>
 	    <key>label</key>
-	    <string>Leaving the password blank will prompt you to accept each incoming connection.</string>
+	    <string>Leaving the password blank will prompt you to accept each incoming connection and the connection will be view only.</string>
             <key>requiredCapabilities</key>
             <array><dict>
                 <key>wildcat</key><false/>
