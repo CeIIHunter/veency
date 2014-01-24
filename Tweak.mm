@@ -26,7 +26,7 @@
 #define _unlikely(expr) \
     __builtin_expect(expr, 0)
 
-#define SYSTEM_VERSION_GREATER_THAN_OR_EQUAL_TO(_gVersion)  ( floor(NSFoundationVersionNumber) >= _gVersion )
+#define SYSTEM_VERSION_GREATER_THAN_OR_EQUAL_TO(v)  ([[[UIDevice currentDevice] systemVersion] compare:v options:NSNumericSearch] != NSOrderedAscending)
 
 #include <CydiaSubstrate.h>
 
@@ -34,6 +34,7 @@
 #include <rfb/keysym.h>
 
 #include <mach/mach_port.h>
+#include <mach/mach_time.h>
 #include <sys/mman.h>
 #include <sys/sysctl.h>
 
@@ -46,7 +47,9 @@
 #import <Foundation/Foundation.h>
 #import <IOMobileFramebuffer/IOMobileFramebuffer.h>
 #import <IOKit/IOKitLib.h>
+#import <UIKit/UIApplication2.h>
 #import <UIKit/UIKit.h>
+#import <IOKit/hid/IOHIDEvent.h>
 
 #import <SpringBoard/SBAlertItemsController.h>
 #import <SpringBoard/SBDismissOnlyAlertItem.h>
@@ -62,6 +65,7 @@
 
 extern "C" void CoreSurfaceBufferFlushProcessorCaches(CoreSurfaceBufferRef buffer);
 extern "C" int CoreSurfaceAcceleratorTransferSurface(CoreSurfaceAcceleratorRef accel, CoreSurfaceBufferRef src, CoreSurfaceBufferRef dst, CFDictionaryRef dict);
+extern "C" int BKSHIDEventSendToApplicationWithBundleID(IOHIDEventRef event,NSString* str );
 
 static size_t width_;
 static size_t height_;
@@ -367,7 +371,7 @@ static void VNCSettings() {
 
         NSNumber *cursor = [settings objectForKey:@"ShowCursor"];
         cursor_ = cursor == nil ? true : [cursor boolValue];
-        if(SYSTEM_VERSION_GREATER_THAN_OR_EQUAL_TO(7)) { 
+        if(SYSTEM_VERSION_GREATER_THAN_OR_EQUAL_TO(@"7.0")) { 
             // iOS7 crashes with the mouse cursor
             cursor_=false; 
         }
@@ -445,7 +449,7 @@ static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
     rfbDefaultPtrAddEvent(buttons, x, y, client);
 
     // *** not working in iOS7
-    if(!SYSTEM_VERSION_GREATER_THAN_OR_EQUAL_TO(7)) { 
+    if(!SYSTEM_VERSION_GREATER_THAN_OR_EQUAL_TO(@"7.0")) { 
         if (Ashikase(false)) {
             AshikaseSendEvent(x, y, buttons);
             return;
@@ -471,6 +475,19 @@ static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
     if ((diff & 0x04) != 0) {
         struct GSEventRecord record;
 
+#if 1
+//~~~ Not working...
+if(SYSTEM_VERSION_GREATER_THAN_OR_EQUAL_TO(@"7.0")) { 
+    UIApplication *springboard = (UIApplication *)[UIApplication sharedApplication];
+    uint64_t abTime = mach_absolute_time();
+    IOHIDEventRef event = IOHIDEventCreateKeyboardEvent(kCFAllocatorDefault, *(AbsoluteTime *)&abTime, 0xC, 0x40, YES, 0);
+    [springboard menuButtonDown:(GSEventRef)event];
+    CFRelease(event);
+    event = IOHIDEventCreateKeyboardEvent(kCFAllocatorDefault, *(AbsoluteTime *)&abTime, 0xC, 0x40, YES, 0);
+    [springboard menuButtonUp:(GSEventRef)event];
+    CFRelease(event);
+} else {
+#endif
         memset(&record, 0, sizeof(record));
 
         record.type = (buttons & 0x04) != 0 ?
@@ -481,6 +498,7 @@ static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
 
         FixRecord(&record);
         GSSendSystemEvent(&record);
+}
     }
 
     if ((diff & 0x02) != 0) {
@@ -574,7 +592,7 @@ static void VNCKeyboard(rfbBool down, rfbKeySym key, rfbClientPtr client) {
     if (!down)
         return;
 
-//~~~ iOS7 may need IOHIDEventCreateKeyboardEvent()
+
     switch (key) {
         case XK_Return: key = '\r'; break;
         case XK_BackSpace: key = 0x7f; break;
@@ -713,6 +731,10 @@ static void VNCSetup() {
         opengles2 = NULL;
 
     bool accelerated(opengles2 != NULL && [(NSNumber *)opengles2 boolValue]);
+    if(SYSTEM_VERSION_GREATER_THAN_OR_EQUAL_TO(@"7.0")) { 
+        // accelerated is supported in iOS7 but is not detected here.
+        accelerated=true;
+    }
 
     if (accelerated)
         CoreSurfaceAcceleratorCreate(NULL, NULL, &accelerator_);
@@ -792,8 +814,9 @@ static CoreSurfaceBufferRef layer_;
 
 static void Copy64x16BlockedImage(char *dest,const char *fromStart) {
     const char *fromEnd;
-    char *to,*toLine;
+    char *to,*toLine,*toEnd,*toPtr;
     fromEnd=fromStart+(4*width_*height_);
+    toEnd=dest+(4*width_*height_);
     to=dest;
     int toLineOffset=0;
     unsigned int toXOffset=0;
@@ -807,7 +830,9 @@ static void Copy64x16BlockedImage(char *dest,const char *fromStart) {
             // one 16x line from image
             toLineOffset=0;
             while(toLineOffset<16) {
-                memcpy(toLine+toXOffset+(4*width_*toLineOffset),from,64*4);
+                toPtr=toLine+toXOffset+(4*width_*toLineOffset);
+                if((toPtr+(64*4))<toEnd  && (from+(64*4))<fromEnd)
+                    memcpy(toPtr,from,64*4);
                 toLineOffset++;
                 from+=64*4;
             }
@@ -845,9 +870,8 @@ static void CopyToFrameBuffer(rfbPixel *dest,rfbPixel *from,int divideBy) {
         destUpto=destLine+destwidth_;
     }
 }
-static int isBottomScreenBlack() {
-    const char *data=bufferData_;
-    const char *dataEnd=bufferData_+(width_*height_*sizeof(rfbPixel));
+static int isBottomScreenBlack(const char *data) {
+    const char *dataEnd=data+(width_*height_*sizeof(rfbPixel));
     int hasNonZero=0;
     int hasZero=0;
     int width4=(width_/4)+width_;
@@ -909,7 +933,7 @@ static void OnLayer(IOMobileFramebufferRef fb, CoreSurfaceBufferRef layer) {
                     CoreSurfaceAcceleratorTransferSurface(accelerator_, layer, buffer_, options2_);
 
                     if(skipBlack_) {
-                        ok=isBottomScreenBlack()?0:1;
+                        ok=isBottomScreenBlack(bufferData_)?0:1;
                     }
                     if(ok) {
                         if(divideScreenBy_>1) {
@@ -926,30 +950,39 @@ static void OnLayer(IOMobileFramebufferRef fb, CoreSurfaceBufferRef layer) {
                 if(updatingScreen) return;
                 updatingScreen=true;
                 CoreSurfaceBufferLock(layer, 2);
-                rfbPixel *data(reinterpret_cast<rfbPixel *>(CoreSurfaceBufferGetBaseAddress(layer)));
+                @try {
+                    rfbPixel *data(reinterpret_cast<rfbPixel *>(CoreSurfaceBufferGetBaseAddress(layer)));
+                    if(skipBlack_) {
+                        if(isBottomScreenBlack((const char *)data)) {
+                            return;
+                        }
+                    }
 
-                CoreSurfaceBufferFlushProcessorCaches(layer);
+                    CoreSurfaceBufferFlushProcessorCaches(layer);
 
-                /*rfbPixel corner(data[0]);
-                data[0] = 0;
-                data[0] = corner;*/
+                    /*rfbPixel corner(data[0]);
+                    data[0] = 0;
+                    data[0] = corner;*/
 
-//                screen_->frameBuffer = const_cast<char *>(reinterpret_cast<volatile char *>(data));
+    //                screen_->frameBuffer = const_cast<char *>(reinterpret_cast<volatile char *>(data));
 
-                const char *x = const_cast<char *>(reinterpret_cast<volatile char *>(data));
-                if(divideScreenBy_==1) {
-                    Copy64x16BlockedImage((char *)mainFrameBuffer_,x);
+                    const char *x = const_cast<char *>(reinterpret_cast<volatile char *>(data));
+                    if(divideScreenBy_==1) {
+                        Copy64x16BlockedImage((char *)mainFrameBuffer_,x);
+                    } else {
+                        if(correctedBlocksBuffer_==NULL)
+                            correctedBlocksBuffer_ = reinterpret_cast<rfbPixel *>(mmap(NULL, sizeof(rfbPixel) * width_ * height_, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_NOCACHE, VM_FLAGS_PURGABLE, 0));
+//~~~ When using camera, opengl, etc. apps.  Any access to  the pointer returned from CoreSurfaceBufferGetBaseAddress crashes
+                        Copy64x16BlockedImage((char *)correctedBlocksBuffer_,x);
+                        CopyToFrameBuffer(mainFrameBuffer_,(rfbPixel *)correctedBlocksBuffer_,divideScreenBy_);
+                    }
+                } 
+                @finally {
                     CoreSurfaceBufferUnlock(layer);
-                } else {
-                    if(correctedBlocksBuffer_==NULL)
-                        correctedBlocksBuffer_ = reinterpret_cast<rfbPixel *>(mmap(NULL, sizeof(rfbPixel) * width_ * height_, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_NOCACHE, VM_FLAGS_PURGABLE, 0));
-                    Copy64x16BlockedImage((char *)correctedBlocksBuffer_,x);
-                    CoreSurfaceBufferUnlock(layer);
-                    CopyToFrameBuffer(mainFrameBuffer_,(rfbPixel *)correctedBlocksBuffer_,divideScreenBy_);
+                    updatingScreen=false;
                 }
 
 //    memcpy(mainFrameBuffer_,x,(4*640*200));
-                updatingScreen=false;
             }
         }
         if(doUpdates)
