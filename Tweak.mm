@@ -55,6 +55,7 @@
 #import <SpringBoard/SBDismissOnlyAlertItem.h>
 #import <SpringBoard/SBStatusBarController.h>
 
+#include "SimulateKeyboard.h"
 #include "SpringBoardAccess.h"
 #include "SpringBoardAccess.c"
 #include "SimulateTouch/SimulateTouch.h"
@@ -66,6 +67,10 @@
 extern "C" void CoreSurfaceBufferFlushProcessorCaches(CoreSurfaceBufferRef buffer);
 extern "C" int CoreSurfaceAcceleratorTransferSurface(CoreSurfaceAcceleratorRef accel, CoreSurfaceBufferRef src, CoreSurfaceBufferRef dst, CFDictionaryRef dict);
 extern "C" int BKSHIDEventSendToApplicationWithBundleID(IOHIDEventRef event,NSString* str );
+static void OnLayer(IOMobileFramebufferRef fb, CoreSurfaceBufferRef layer);
+
+static IOMobileFramebufferRef main_=NULL;
+static CoreSurfaceBufferRef layer_=NULL;
 
 static size_t width_;
 static size_t height_;
@@ -91,7 +96,7 @@ static unsigned clients_;
 
 static CFMessagePortRef ashikase_;
 static bool cursor_;
-static bool skipBlack_;
+static int skipBlack_;
 static int divideScreenBy_=1;
 
 static rfbPixel *black_;
@@ -100,6 +105,7 @@ static rfbPixel *correctedBlocksBuffer_=NULL;
 static char *bufferData_;
 
 #if 0
+// Logging is costly.  Takes 3-6ms
 static void Log(const char *str,...) {
 FILE *out;
 va_list args;
@@ -195,6 +201,7 @@ static int downFinger_=0;
 
 static void VNCSetup();
 static void VNCEnabled();
+static void VNCShutDown();
 
 static void OnUserNotification(CFUserNotificationRef notification, CFOptionFlags flags) {
     [condition_ lock];
@@ -342,10 +349,17 @@ static void VNCSettingsScreenSize() {
     NSDictionary *settings([NSDictionary dictionaryWithContentsOfFile:[NSString stringWithFormat:@"%@/Library/Preferences/com.saurik.Veency.plist", NSHomeDirectory()]]);
 
     NSNumber *divideScreenBy = [settings objectForKey:@"DivideScreenBy"];
+    int divideScreenByOld=divideScreenBy_;
     divideScreenBy_ = [divideScreenBy intValue];
     if(divideScreenBy_<1 || divideScreenBy_>320) divideScreenBy_=1;
     destwidth_ = width_/divideScreenBy_;
     destheight_ = height_/divideScreenBy_;
+
+    if(running_ && divideScreenBy_ != divideScreenByOld) {
+        VNCShutDown();
+        VNCSetup();
+        VNCEnabled();
+    }
 }
 
 static void VNCSettings() {
@@ -377,7 +391,7 @@ static void VNCSettings() {
         }
 
         NSNumber *skipBlack = [settings objectForKey:@"SkipBlack"];
-        skipBlack_ = skipBlack == nil ? false : [skipBlack boolValue];
+        skipBlack_ = skipBlack == nil ? 0 : [skipBlack intValue];
 
         VNCSettingsScreenSize();
 
@@ -475,19 +489,6 @@ static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
     if ((diff & 0x04) != 0) {
         struct GSEventRecord record;
 
-#if 1
-//~~~ Not working...
-if(SYSTEM_VERSION_GREATER_THAN_OR_EQUAL_TO(@"7.0")) { 
-    UIApplication *springboard = (UIApplication *)[UIApplication sharedApplication];
-    uint64_t abTime = mach_absolute_time();
-    IOHIDEventRef event = IOHIDEventCreateKeyboardEvent(kCFAllocatorDefault, *(AbsoluteTime *)&abTime, 0xC, 0x40, YES, 0);
-    [springboard menuButtonDown:(GSEventRef)event];
-    CFRelease(event);
-    event = IOHIDEventCreateKeyboardEvent(kCFAllocatorDefault, *(AbsoluteTime *)&abTime, 0xC, 0x40, YES, 0);
-    [springboard menuButtonUp:(GSEventRef)event];
-    CFRelease(event);
-} else {
-#endif
         memset(&record, 0, sizeof(record));
 
         record.type = (buttons & 0x04) != 0 ?
@@ -498,7 +499,6 @@ if(SYSTEM_VERSION_GREATER_THAN_OR_EQUAL_TO(@"7.0")) {
 
         FixRecord(&record);
         GSSendSystemEvent(&record);
-}
     }
 
     if ((diff & 0x02) != 0) {
@@ -774,6 +774,10 @@ static void VNCSetup() {
     screen_->cursor = NULL;
 }
 
+static void VNCShutDown() {
+    rfbShutdownServer(screen_, true);
+    running_ = false;
+}
 static void VNCEnabled() {
     [lock_ lock];
 
@@ -789,8 +793,7 @@ static void VNCEnabled() {
             rfbInitServer(screen_);
             rfbRunEventLoop(screen_, -1, true);
         } else {
-            rfbShutdownServer(screen_, true);
-            running_ = false;
+            VNCShutDown();
         }
 
     [lock_ unlock];
@@ -808,8 +811,6 @@ static void VNCNotifyEnabled(
 
 void (*$IOMobileFramebufferIsMainDisplay)(IOMobileFramebufferRef, int *);
 
-static IOMobileFramebufferRef main_;
-static CoreSurfaceBufferRef layer_;
 
 
 static void Copy64x16BlockedImage(char *dest,const char *fromStart) {
@@ -846,8 +847,10 @@ static void Copy64x16BlockedImage(char *dest,const char *fromStart) {
 static void CopyToFrameBuffer(rfbPixel *dest,rfbPixel *from,int divideBy) {
     int size;
     int skipDots;
+    rfbPixel zero[16];
     rfbPixel *fromEnd,*destUpto,*fromNextLine,*fromUpto,*fromLine,*destEnd,*destLine;
 
+    memset(zero,0,sizeof(zero));
     destEnd=dest+(destwidth_*destheight_);
 
     size=width_*height_;
@@ -861,11 +864,29 @@ static void CopyToFrameBuffer(rfbPixel *dest,rfbPixel *from,int divideBy) {
         destLine=destUpto;
         fromLine=fromUpto;
         fromNextLine=fromUpto+width_;
-        while(fromUpto<fromNextLine) {
-            *destUpto=*fromUpto;
-            ++destUpto;
-            fromUpto+=skipDots;
+
+#if 0
+//*** check for black bits line by line, makes no difference to speed
+        int hasZeros=0;
+        if(skipBlack_) {
+            const rfbPixel *fromTest=fromUpto;
+            while(fromTest<fromNextLine) {
+                if(memcmp(fromTest,zero,sizeof(zero))==0) {
+                    hasZeros=1;
+                    break;
+                }
+                fromTest+=sizeof(zero)/sizeof(zero[0]);
+            }
         }
+
+        if(!hasZeros) {
+#endif
+            while(fromUpto<fromNextLine) {
+                *destUpto=*fromUpto;
+                ++destUpto;
+                fromUpto+=skipDots;
+            }
+//        }
         fromUpto=fromLine+(width_*skipDots);
         destUpto=destLine+destwidth_;
     }
@@ -874,8 +895,8 @@ static int isBottomScreenBlack(const char *data) {
     const char *dataEnd=data+(width_*height_*sizeof(rfbPixel));
     int hasNonZero=0;
     int hasZero=0;
-    int width4=(width_/4)+width_;
-
+//    int width4=(width_/4)+width_;
+    int width4=96;
 
     for(int *d=(int *)(data+(width_*(height_/8)*7)); d<(int *)dataEnd; d+=width4) { 
         if(d[0]) { ++hasNonZero;  }
@@ -933,6 +954,7 @@ static void OnLayer(IOMobileFramebufferRef fb, CoreSurfaceBufferRef layer) {
                     CoreSurfaceAcceleratorTransferSurface(accelerator_, layer, buffer_, options2_);
 
                     if(skipBlack_) {
+                        usleep(skipBlack_);
                         ok=isBottomScreenBlack(bufferData_)?0:1;
                     }
                     if(ok) {

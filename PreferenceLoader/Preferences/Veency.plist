@@ -53,15 +53,17 @@
 
         <dict>
             <key>cell</key>
-            <string>PSSwitchCell</string>
+	    <string>PSEditTextCell</string>
+	    <key>isNumeric</key>
+	    <true />
             <key>default</key>
-            <true/>
+            <integer>8000</integer>
             <key>defaults</key>
             <string>com.saurik.Veency</string>
             <key>key</key>
             <string>SkipBlack</string>
             <key>label</key>
-            <string>Skip black screens</string>
+            <string>Skip black screen delay</string>
             <key>PostNotification</key>
             <string>com.saurik.Veency-Settings</string>
         </dict>
@@ -116,7 +118,7 @@
 	    <key>cell</key>
 	    <string>PSGroupCell</string>
             <key>footerText</key>
-            <string>To get a smaller screen for faster updates.  Sorry, need to restart device after changing this number.</string>
+            <string>To get a smaller screen for faster updates.</string>
 	</dict>
 	<dict>
 	    <key>cell</key>
