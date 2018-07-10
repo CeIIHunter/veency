@@ -20,7 +20,7 @@
 * Uses SimulateTouch.
 
 ### To compile...
-* git clone https://github.com/DHowett/theos.git
+* git clone https://github.com/DHowett/theos.git (this one is old. I haven't tried the latest, it is at https://github.com/theos/theos)
 * git clone https://github.com/iolate/SimulateTouch.git
 * "unzip theos_includes.zip" into theos/include  (or you can grab the headers from various places, iphone-dev, etc.)
 * Edit Makefile.osx,  change the framework path to where you have Xcode installed.
